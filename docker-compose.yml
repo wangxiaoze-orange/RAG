@@ -1,0 +1,158 @@
+# RAG 系统中间件编排：redis / mysql / minio / etcd / milvus
+# 使用：docker compose up -d
+# 业务 etcd+minio 与 Milvus 内部依赖（etcd/minio）隔离，避免互相污染
+name: rag-stack
+
+services:
+  # ---------- 业务中间件 ----------
+  redis:
+    image: redis:7.4-alpine
+    container_name: rag-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mysql:
+    image: mysql:8.0
+    container_name: rag-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rag_root_123
+      MYSQL_DATABASE: rag
+      MYSQL_USER: rag
+      MYSQL_PASSWORD: rag_123456
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-authentication-plugin=mysql_native_password
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./deploy/mysql/init:/docker-entrypoint-initdb.d:ro   # 首次启动自动建表
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prag_root_123"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: rag-minio
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # 控制台
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # 业务配置中心 etcd（模型供应商配置 / rag.* 可调参数）
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.15
+    container_name: rag-etcd
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    command: etcd --advertise-client-urls http://0.0.0.0:2379 --listen-client-urls http://0.0.0.0:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-cluster default=http://0.0.0.0:2380 --initial-advertise-peer-urls http://0.0.0.0:2380 --initial-cluster-state new --data-dir /etcd-data
+    volumes:
+      - etcd-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # 一次性任务：等 etcd 健康后写入 rag.* 默认参数与供应商种子
+  # 注意：quay.io/coreos/etcd 全系镜像（含 v3.4.x）都是 distroless（无 /bin/sh），
+  # 无法在其内部执行 shell 脚本。故本容器用 alpine（自带 wget），
+  # 通过 etcd v3 gRPC-gateway HTTP API 写入，不依赖 etcdctl（见 seed-config.sh 注释）
+  etcd-init:
+    image: alpine:3.20
+    container_name: rag-etcd-init
+    depends_on:
+      etcd:
+        condition: service_healthy
+    environment:
+      ETCD_ENDPOINTS: http://etcd:2379
+    volumes:
+      - ./deploy/etcd/seed-config.sh:/seed-config.sh:ro
+    entrypoint: ["/bin/sh", "/seed-config.sh"]
+    restart: "no"
+
+  # ---------- Milvus 及其内部依赖 ----------
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.15
+    container_name: rag-milvus-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+    command: etcd --advertise-client-urls http://0.0.0.0:2379 --listen-client-urls http://0.0.0.0:2379 --data-dir /etcd-data
+    volumes:
+      - milvus-etcd-data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  milvus-minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    container_name: rag-milvus-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /minio_data --console-address ":9001"
+    volumes:
+      - milvus-minio-data:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  milvus-standalone:
+    image: milvusdb/milvus:v2.5.4
+    container_name: rag-milvus
+    ports:
+      - "19530:19530"   # gRPC
+      - "9091:9091"     # 健康检查
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+      MINIO_ACCESS_KEY_ID: minioadmin
+      MINIO_SECRET_ACCESS_KEY: minioadmin
+    command: ["milvus", "run", "standalone"]
+    volumes:
+      - milvus-data:/var/lib/milvus
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  redis-data:
+  mysql-data:
+  minio-data:
+  etcd-data:
+  milvus-etcd-data:
+  milvus-minio-data:
+  milvus-data:

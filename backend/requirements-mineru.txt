@@ -1,0 +1,4 @@
+# MinerU 文档清洗（重依赖：torch 等，安装较慢，建议独立虚拟环境）
+# 安装：pip install -r requirements-mineru.txt
+# 未安装时入库管线自动降级到 pypdf/pdfplumber/docx
+magic-pdf==1.3.12
