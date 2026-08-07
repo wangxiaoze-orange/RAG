@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from src.config.settings import settings
 from src.core.security import hash_password
+from src.db.migrate import ensure_columns
 from src.db.models import Base, ModelProvider, RagConfig, User
 from src.db.session import async_session_maker, engine
 from src.providers.encrypt import encrypt_secret
@@ -23,7 +24,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def create_tables() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("数据表已就绪")
+        added = await ensure_columns(conn)
+    logger.info("数据表已就绪（补列 %d 个）", added)
 
 
 async def seed_admin() -> None:
@@ -32,12 +34,18 @@ async def seed_admin() -> None:
             await session.execute(select(User).where(User.username == settings.seed_admin_username))
         ).scalars().first()
         if existing:
-            logger.info("admin 已存在，跳过")
+            if existing.role != "admin":
+                existing.role = "admin"
+                await session.commit()
+                logger.info("种子账号 %s 已升级为 admin", existing.username)
+            else:
+                logger.info("admin 已存在，跳过")
             return
         session.add(User(
             username=settings.seed_admin_username,
             password_hash=hash_password(settings.seed_admin_password),
             nickname="管理员",
+            role="admin",
         ))
         await session.commit()
         logger.info("admin 已创建: %s", settings.seed_admin_username)
@@ -81,7 +89,19 @@ async def seed_default_config() -> None:
         "rag.reflection_threshold": 0.4,
         "rag.memory_ttl_days": 30,
         "rag.web_search_timeout_seconds": 8,
+        "rag.temperature": 0.7,
+        "rag.recall_total": 20,
+        "rag.intent.label_weights": {
+            "need_vector": 1.0,
+            "need_bm25": 1.0,
+            "need_web": 0.8,
+            "need_memory": 0.5,
+            "need_fact_check": 0.9,
+            "need_summary": 0.8,
+            "need_comparison": 0.9,
+        },
         "rag.feature.cache_enabled": True,
+        "rag.feature.faq_enabled": True,
         "rag.feature.web_search_enabled": True,
         "rag.feature.agent_retrieval_enabled": True,
     }

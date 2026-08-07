@@ -10,8 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from src.config.config_center import config_center
 from src.core.deps import get_current_user, get_provider_manager
 from src.core.sse import sse_format
+from src.db.session import async_session_maker
 from src.providers.factory import create_chat_llm, create_embeddings
 from src.providers.manager import ProviderManager
 from src.rag.graph import get_graph
@@ -49,7 +51,17 @@ async def chat_stream(
         if provider is None:
             raise HTTPException(status_code=400, detail="尚未配置任何模型供应商，请先在前端供应商页配置并设为默认")
 
-    llm = create_chat_llm(provider, model=body.model)
+    # 知识库范围权限过滤：非 admin 只能用可见的 kb_ids（越权 id 静默剔除）
+    from src.api.v2.knowledge_base import visible_kb_ids
+    kb_ids = body.kb_ids or []
+    if kb_ids and user.get("role") != "admin":
+        async with async_session_maker() as session:
+            allowed = await visible_kb_ids(session, user)
+        kb_ids = [k for k in kb_ids if k in (allowed or [])]
+
+    # 温度等生成参数由配置中心控制（前端流水线配置页可改，TTL 10 秒内生效）
+    temperature = await config_center.get_float("rag.temperature", 0.7)
+    llm = create_chat_llm(provider, model=body.model, temperature=temperature)
     embed_fn = None
     if provider.embedding_model:
         embeddings = create_embeddings(provider)
@@ -60,7 +72,7 @@ async def chat_stream(
         sink=sink,
         user_id=user["user_id"],
         username=user["username"],
-        kb_ids=body.kb_ids or [],
+        kb_ids=kb_ids,
         provider_name=provider.name,
         model=body.model or provider.model,
         provider=provider,
@@ -78,8 +90,8 @@ async def chat_stream(
         "start_time": time.monotonic(),
     }
     logger.info(
-        "聊天请求: user=%s kb_ids=%s provider=%s model=%s question=%s",
-        user["username"], body.kb_ids or [], provider.name, ctx.model, body.question[:80],
+        "聊天请求: user=%s kb_ids=%s provider=%s model=%s temperature=%.2f question=%s",
+        user["username"], kb_ids, provider.name, ctx.model, temperature, body.question[:80],
     )
 
     async def event_gen():

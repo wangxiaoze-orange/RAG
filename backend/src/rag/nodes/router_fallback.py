@@ -44,6 +44,7 @@ async def router_fallback_node(state: ChatState, config: RunnableConfig) -> dict
     if state.get("needs_decomposition") and state.get("sub_questions"):
         queries += state["sub_questions"][:2]  # 子问题最多并行 2 个，控制成本
 
+    budgets: dict[str, int] = state.get("recall_budgets") or {}
     collector: dict[str, list] = {}
     tool_logs: list[dict] = []
 
@@ -51,13 +52,13 @@ async def router_fallback_node(state: ChatState, config: RunnableConfig) -> dict
         start = time.monotonic()
         try:
             if tool_name == TOOL_DOC_SEARCH:
-                r = await rag_toolkit.doc_search_service(query, kb_ids=ctx.kb_ids, user_id=ctx.user_id, embed_fn=ctx.embed_fn)
+                r = await rag_toolkit.doc_search_service(query, kb_ids=ctx.kb_ids, user_id=ctx.user_id, top_k=budgets.get(tool_name, 10), embed_fn=ctx.embed_fn)
                 hits = r.get("chunks", [])
             elif tool_name == TOOL_KEYWORD_SEARCH:
-                r = await rag_toolkit.keyword_search_service(query, kb_ids=ctx.kb_ids, user_id=ctx.user_id)
+                r = await rag_toolkit.keyword_search_service(query, kb_ids=ctx.kb_ids, user_id=ctx.user_id, top_k=budgets.get(tool_name, 10))
                 hits = r.get("chunks", [])
             elif tool_name == TOOL_WEB_SEARCH:
-                r = await rag_toolkit.web_search_service(query)
+                r = await rag_toolkit.web_search_service(query, max_results=min(budgets.get(tool_name, 5), 10))
                 hits = r.get("results", [])
             elif tool_name == TOOL_RECALL_MEMORY:
                 r = await rag_toolkit.recall_memory_service(ctx.user_id)

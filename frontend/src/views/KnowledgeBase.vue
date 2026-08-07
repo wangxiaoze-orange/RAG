@@ -18,6 +18,7 @@
                 <el-dropdown-menu>
                   <el-dropdown-item command="upload">上传文档</el-dropdown-item>
                   <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                  <el-dropdown-item v-if="userStore.isAdmin" command="perm">权限设置</el-dropdown-item>
                   <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -27,6 +28,11 @@
           <div class="kb-meta">
             <el-tag size="small">{{ kb.doc_count }} 文档</el-tag>
             <el-tag size="small" type="info">{{ kb.chunk_count }} 切片</el-tag>
+            <el-tag size="small" type="warning">{{ STRATEGY_TEXT[kb.chunk_strategy] || kb.chunk_strategy }}</el-tag>
+            <el-tag v-if="kb.is_owner" size="small" type="success">我的</el-tag>
+          </div>
+          <div v-if="kb.department_names?.length" class="kb-depts">
+            <el-tag v-for="n in kb.department_names" :key="n" size="small" type="info" effect="plain">{{ n }}</el-tag>
           </div>
           <el-divider style="margin: 10px 0" />
           <div class="docs" v-loading="docsLoading[kb.id]">
@@ -64,18 +70,62 @@
     </el-row>
 
     <!-- 新建/重命名 -->
-    <el-dialog v-model="createVisible" :title="editing ? '重命名知识库' : '新建知识库'" width="420px">
-      <el-form label-width="80px">
+    <el-dialog v-model="createVisible" :title="editing ? '编辑知识库' : '新建知识库'" width="520px">
+      <el-form label-width="110px">
         <el-form-item label="名称">
           <el-input v-model="form.name" maxlength="128" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" maxlength="512" />
         </el-form-item>
+        <el-form-item label="切片策略">
+          <el-select v-model="form.chunk_strategy" style="width: 100%">
+            <el-option label="Markdown 结构切分（推荐）" value="markdown" />
+            <el-option label="固定长度" value="fixed" />
+            <el-option label="语义切分（按句向量断段）" value="semantic" />
+            <el-option label="父子切片（子块检索、父块扩展）" value="parent_child" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="切片长度">
+          <el-input-number v-model="form.chunk_size" :min="64" :max="4096" :step="64" controls-position="right" />
+          <span class="hint">字符</span>
+        </el-form-item>
+        <el-form-item label="切片重叠">
+          <el-input-number v-model="form.chunk_overlap" :min="0" :max="512" :step="10" controls-position="right" />
+          <span class="hint">字符</span>
+        </el-form-item>
+        <el-form-item label="解析器偏好">
+          <el-select v-model="form.parse_pref" style="width: 100%">
+            <el-option label="自动选择" value="auto" />
+            <el-option label="MinerU（含置信度过滤）" value="mineru" />
+            <el-option label="PyPDF" value="pypdf" />
+            <el-option label="pdfplumber" value="pdfplumber" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="解析置信度下限">
+          <el-slider v-model="form.parse_min_confidence" :min="0" :max="1" :step="0.05" show-input style="max-width: 320px" />
+        </el-form-item>
+        <p class="form-note">切片/解析配置仅对之后新上传的文档生效</p>
       </el-form>
       <template #footer>
         <el-button @click="createVisible = false">取消</el-button>
         <el-button type="primary" @click="submitKb">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 权限设置（授权部门） -->
+    <el-dialog v-model="permVisible" :title="`权限设置 — ${permKb?.name || ''}`" width="460px">
+      <p class="perm-note">勾选后可访问该知识库的部门（创建者与管理员始终可见）</p>
+      <el-checkbox-group v-model="permDeptIds" v-loading="permLoading">
+        <el-checkbox v-for="d in allDepartments" :key="d.id" :value="d.id" style="display: block; margin-bottom: 6px">
+          {{ d.name }}
+          <span v-if="d.description" class="hint">（{{ d.description }}）</span>
+        </el-checkbox>
+      </el-checkbox-group>
+      <el-empty v-if="!allDepartments.length && !permLoading" description="暂无部门，请先在用户管理中创建" :image-size="60" />
+      <template #footer>
+        <el-button @click="permVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitPerm">保存授权</el-button>
       </template>
     </el-dialog>
 
@@ -99,8 +149,11 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { listKbs, createKb, updateKb, deleteKb, listDocuments, uploadDocument, deleteDocument, retryDocument, listChunks } from '../api/kb'
+import { listKbs, createKb, updateKb, deleteKb, listDocuments, uploadDocument, deleteDocument, retryDocument, listChunks, getKbDepartments, setKbDepartments } from '../api/kb'
+import { listDepartments } from '../api/admin'
+import { useUserStore } from '../stores/user'
 
+const userStore = useUserStore()
 const kbs = ref([])
 const docsByKb = reactive({})
 const docsLoading = reactive({})
@@ -108,11 +161,31 @@ const uploading = reactive({})
 const uploadProgress = reactive({})
 const createVisible = ref(false)
 const editing = ref(null)
-const form = reactive({ name: '', description: '' })
+const form = reactive({
+  name: '',
+  description: '',
+  chunk_strategy: 'markdown',
+  chunk_size: 512,
+  chunk_overlap: 50,
+  parse_pref: 'auto',
+  parse_min_confidence: 0.5,
+})
 const chunksVisible = ref(false)
 const chunks = ref([])
 const chunksLoading = ref(false)
 const previewDoc = ref(null)
+const permVisible = ref(false)
+const permKb = ref(null)
+const permDeptIds = ref([])
+const permLoading = ref(false)
+const allDepartments = ref([])
+
+const STRATEGY_TEXT = {
+  markdown: 'Markdown 切分',
+  fixed: '固定长度',
+  semantic: '语义切分',
+  parent_child: '父子切片',
+}
 
 const STATUS_TEXT = {
   uploaded: '待解析',
@@ -157,14 +230,19 @@ function openCreate() {
   editing.value = null
   form.name = ''
   form.description = ''
+  form.chunk_strategy = 'markdown'
+  form.chunk_size = 512
+  form.chunk_overlap = 50
+  form.parse_pref = 'auto'
+  form.parse_min_confidence = 0.5
   createVisible.value = true
 }
 
 async function submitKb() {
   if (!form.name.trim()) return ElMessage.warning('请输入名称')
   try {
-    if (editing.value) await updateKb(editing.value.id, { name: form.name, description: form.description })
-    else await createKb({ name: form.name, description: form.description })
+    if (editing.value) await updateKb(editing.value.id, { ...form })
+    else await createKb({ ...form })
     ElMessage.success('保存成功')
     createVisible.value = false
     refresh()
@@ -178,7 +256,25 @@ async function onKbCommand(cmd, kb) {
     editing.value = kb
     form.name = kb.name
     form.description = kb.description || ''
+    form.chunk_strategy = kb.chunk_strategy || 'markdown'
+    form.chunk_size = kb.chunk_size || 512
+    form.chunk_overlap = kb.chunk_overlap ?? 50
+    form.parse_pref = kb.parse_pref || 'auto'
+    form.parse_min_confidence = kb.parse_min_confidence ?? 0.5
     createVisible.value = true
+  } else if (cmd === 'perm') {
+    permKb.value = kb
+    permVisible.value = true
+    permLoading.value = true
+    try {
+      const [detail, depts] = await Promise.all([getKbDepartments(kb.id), listDepartments()])
+      permDeptIds.value = detail.department_ids || []
+      allDepartments.value = depts
+    } catch (e) {
+      ElMessage.error(e.message)
+    } finally {
+      permLoading.value = false
+    }
   } else if (cmd === 'delete') {
     try {
       await ElMessageBox.confirm(`删除知识库「${kb.name}」及其全部文档/切片？此操作不可恢复`, '危险操作', { type: 'warning' })
@@ -241,6 +337,17 @@ async function previewChunks(kb, doc) {
     chunksLoading.value = false
   }
 }
+
+async function submitPerm() {
+  try {
+    await setKbDepartments(permKb.value.id, permDeptIds.value)
+    ElMessage.success('授权已保存')
+    permVisible.value = false
+    refresh()
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
 </script>
 
 <style scoped>
@@ -275,6 +382,32 @@ async function previewChunks(kb, doc) {
   font-size: 13px;
   margin: 6px 0;
   min-height: 18px;
+}
+.kb-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.kb-depts {
+  margin-top: 6px;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.hint {
+  color: #909399;
+  font-size: 12px;
+  margin-left: 8px;
+}
+.form-note {
+  color: #909399;
+  font-size: 12px;
+  margin: 0 0 0 110px;
+}
+.perm-note {
+  color: #606266;
+  font-size: 13px;
+  margin-top: 0;
 }
 .docs {
   max-height: 260px;

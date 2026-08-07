@@ -6,6 +6,7 @@
 import logging
 import re
 
+from src.config.config_center import config_center
 from src.rag.nodes._common import emit_stage, invoke_llm_json
 from src.rag.services.prompt_assembler import render_intent_prompt
 from src.rag.state import ChatState, RunnableConfig, RequestCtx, RunnableConfig
@@ -44,6 +45,17 @@ SCOPE_DEFAULT_LABELS = {
     "mixed": ["need_vector", "need_bm25", "need_web"],
     "direct": ["need_summary"],
     "chat": [],
+}
+
+# 标签基础权重（可被 rag.intent.label_weights 配置覆盖）：×标签置信度 → 召回配额占比
+DEFAULT_LABEL_WEIGHTS: dict[str, float] = {
+    "need_vector": 1.0,
+    "need_bm25": 1.0,
+    "need_web": 0.8,
+    "need_memory": 0.6,
+    "need_fact_check": 0.9,
+    "need_summary": 0.9,
+    "need_comparison": 0.9,
 }
 
 
@@ -86,6 +98,52 @@ def weighted_vote_tools(labels: list[str]) -> list[str]:
     return [t for t, v in sorted(votes.items(), key=lambda kv: -kv[1]) if v >= max(0.9, top * 0.6)]
 
 
+def parse_label_confidences(raw_labels: object) -> dict[str, float]:
+    """兼容两种 LLM 输出：[{label, confidence}] 或 [str]（字符串形式置信度记 1.0）"""
+    out: dict[str, float] = {}
+    if isinstance(raw_labels, str):
+        raw_labels = [raw_labels]
+    for item in raw_labels or []:
+        if isinstance(item, dict):
+            label = str(item.get("label") or "")
+            try:
+                conf = max(0.0, min(1.0, float(item.get("confidence", 1.0))))
+            except (TypeError, ValueError):
+                conf = 1.0
+        else:
+            label, conf = str(item), 1.0
+        if label in LABEL_TOOL_WEIGHTS:
+            out[label] = max(out.get(label, 0.0), conf)
+    return out
+
+
+async def compute_recall_budgets(label_confidences: dict[str, float]) -> dict[str, int]:
+    """标签权重 × 标签置信度 → 按 LABEL_TOOL_WEIGHTS 分摄到各检索工具，归一化为召回配额
+    总量取 rag.recall_total（默认 20），权重表取 rag.intent.label_weights（可前端配置）
+    """
+    if not label_confidences:
+        return {}
+    total = await config_center.get_int("rag.recall_total", 20)
+    weights = await config_center.get_json("rag.intent.label_weights", None)
+    if not isinstance(weights, dict) or not weights:
+        weights = DEFAULT_LABEL_WEIGHTS
+    tool_scores: dict[str, float] = {}
+    for label, conf in label_confidences.items():
+        base = float(weights.get(label, DEFAULT_LABEL_WEIGHTS.get(label, 0.8)))
+        score = base * conf
+        if score <= 0:
+            continue
+        for tool, sub_w in LABEL_TOOL_WEIGHTS.get(label, {}).items():
+            tool_scores[tool] = tool_scores.get(tool, 0.0) + score * sub_w
+    if not tool_scores:
+        return {}
+    norm = sum(tool_scores.values())
+    budgets: dict[str, int] = {}
+    for tool, s in tool_scores.items():
+        budgets[tool] = max(1, round(total * s / norm))
+    return budgets
+
+
 async def intent_node(state: ChatState, config: RunnableConfig) -> dict:
     """分层意图识别主节点（③ 概览短路之后、④ 改写之前执行）"""
     ctx: RequestCtx = config["configurable"]["request_ctx"]
@@ -99,26 +157,30 @@ async def intent_node(state: ChatState, config: RunnableConfig) -> dict:
     needs_decomposition = False
 
     # Layer 2：LLM 多标签意图（chat/direct 无需调用，省一次 LLM 往返）
+    label_confidences: dict[str, float] = {}
     if scope not in ("chat", "direct"):
         result = await invoke_llm_json(ctx, render_intent_prompt(question), system="你是意图识别器，只输出 JSON。")
         if result:
-            labels = result.get("labels") or []
-            if isinstance(labels, str):
-                labels = [labels]
-            labels = [l for l in labels if l in LABEL_TOOL_WEIGHTS]
+            label_confidences = parse_label_confidences(result.get("labels"))
+            labels = list(label_confidences.keys())
             needs_decomposition = bool(result.get("needs_decomposition"))
             raw_subs = result.get("sub_questions") or []
             sub_questions = [str(s) for s in raw_subs if str(s).strip()][:3]
-            logger.info("LLM 意图: scope=%s labels=%s 拆解=%s", scope, labels, needs_decomposition)
+            logger.info("LLM 意图: scope=%s labels=%s 置信度=%s 拆解=%s", scope, labels, label_confidences, needs_decomposition)
         if not labels:
             labels = list(SCOPE_DEFAULT_LABELS.get(scope, []))
+            label_confidences = {l: 1.0 for l in labels}  # 兜底标签置信度记 1.0
 
     # Layer 3：策略合并 + 加权投票 → 最终检索工具策略
     tools = weighted_vote_tools(labels)
+    # 置信度加权召回配额（各工具 top_k 上限）
+    recall_budgets = await compute_recall_budgets(label_confidences)
 
     ctx.sink.emit("intent", {
         "scope": scope,
         "labels": labels,
+        "label_confidences": label_confidences,
+        "recall_budgets": recall_budgets,
         "sub_questions": sub_questions,
         "needs_decomposition": needs_decomposition,
         "tools": tools,
@@ -126,6 +188,8 @@ async def intent_node(state: ChatState, config: RunnableConfig) -> dict:
     return {
         "intent_scope": scope,
         "intent_labels": labels,
+        "label_confidences": label_confidences,
+        "recall_budgets": recall_budgets,
         "sub_questions": sub_questions,
         "needs_decomposition": needs_decomposition,
     }

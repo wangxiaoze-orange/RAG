@@ -42,12 +42,22 @@ class MessageOut(BaseModel):
 class KbCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
+    chunk_strategy: str = Field(default="markdown", pattern="^(markdown|fixed|semantic|parent_child)$", description="切片策略")
+    chunk_size: int = Field(default=512, ge=64, le=4096)
+    chunk_overlap: int = Field(default=50, ge=0, le=512)
+    parse_pref: str = Field(default="auto", pattern="^(auto|mineru|pypdf|pdfplumber|docx|text)$", description="解析器偏好")
+    parse_min_confidence: float = Field(default=0.5, ge=0.0, le=1.0, description="解析置信度下限")
 
 
 class KbUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     status: int | None = None
+    chunk_strategy: str | None = Field(default=None, pattern="^(markdown|fixed|semantic|parent_child)$")
+    chunk_size: int | None = Field(default=None, ge=64, le=4096)
+    chunk_overlap: int | None = Field(default=None, ge=0, le=512)
+    parse_pref: str | None = Field(default=None, pattern="^(auto|mineru|pypdf|pdfplumber|docx|text)$")
+    parse_min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class KbOut(BaseModel):
@@ -57,10 +67,21 @@ class KbOut(BaseModel):
     doc_count: int
     chunk_count: int
     status: int
+    chunk_strategy: str = "markdown"
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+    parse_pref: str = "auto"
+    parse_min_confidence: float = 0.5
+    is_owner: bool = False
+    department_names: list[str] = []
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class KbDepartmentsIn(BaseModel):
+    department_ids: list[int] = Field(default_factory=list)
 
 
 class DocumentOut(BaseModel):

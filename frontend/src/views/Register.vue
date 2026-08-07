@@ -9,6 +9,14 @@
         <el-form-item label="昵称（可选）" prop="nickname">
           <el-input v-model="form.nickname" placeholder="显示名称" />
         </el-form-item>
+        <el-form-item label="申请加入部门（可选，需管理员审批）" prop="department_id">
+          <el-select v-model="form.department_id" placeholder="暂不加入部门" clearable style="width: 100%">
+            <el-option v-for="d in departments" :key="d.id" :label="d.name" :value="d.id">
+              <span>{{ d.name }}</span>
+              <span v-if="d.description" style="color: #909399; font-size: 12px; margin-left: 8px">{{ d.description }}</span>
+            </el-option>
+          </el-select>
+        </el-form-item>
         <el-form-item label="密码" prop="password">
           <el-input v-model="form.password" type="password" show-password placeholder="至少 6 位" />
         </el-form-item>
@@ -23,17 +31,27 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { register } from '../api/auth'
+import { listPublicDepartments } from '../api/admin'
 import { useUserStore } from '../stores/user'
 
 const router = useRouter()
 const userStore = useUserStore()
 const formRef = ref()
 const loading = ref(false)
-const form = reactive({ username: '', password: '', nickname: '' })
+const departments = ref([])
+const form = reactive({ username: '', password: '', nickname: '', department_id: null })
+
+onMounted(async () => {
+  try {
+    departments.value = await listPublicDepartments()
+  } catch (e) {
+    departments.value = []
+  }
+})
 const rules = {
   username: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
@@ -51,7 +69,7 @@ async function submit() {
   try {
     const res = await register(form)
     userStore.setAuth(res.token, res.user)
-    ElMessage.success('注册成功，已自动登录')
+    ElMessage.success(form.department_id ? '注册成功，部门申请已提交待审批' : '注册成功，已自动登录')
     router.push('/chat')
   } catch (e) {
     ElMessage.error(e.message)

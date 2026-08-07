@@ -5,12 +5,16 @@
       <div class="nav">
         <router-link to="/chat" class="nav-item">对话</router-link>
         <router-link to="/knowledge" class="nav-item">知识库</router-link>
+        <router-link to="/faqs" class="nav-item">经验库</router-link>
         <router-link to="/providers" class="nav-item">模型供应商</router-link>
-        <router-link to="/admin/config" class="nav-item">流水线配置</router-link>
+        <router-link v-if="userStore.isAdmin" to="/admin/config" class="nav-item">流水线配置</router-link>
+        <router-link v-if="userStore.isAdmin" to="/users" class="nav-item">用户管理</router-link>
       </div>
       <el-dropdown @command="onCommand">
         <span class="user">
           {{ userStore.displayName }}
+          <el-tag v-if="userStore.isAdmin" size="small" type="warning" effect="dark" style="margin-left: 6px">管理员</el-tag>
+          <el-tag v-else-if="userStore.departmentName" size="small" type="info" effect="plain" style="margin-left: 6px">{{ userStore.departmentName }}</el-tag>
           <el-icon><ArrowDown /></el-icon>
         </span>
         <template #dropdown>

@@ -44,9 +44,16 @@ async def agent_retrieve_node(state: ChatState, config: RunnableConfig) -> dict:
         embed_fn=ctx.embed_fn,
         tool_logger=tool_logger,
         collector=collector,
+        budgets=state.get("recall_budgets") or None,
     )
     intent_hint = "、".join(state.get("intent_labels") or [])
-    system = render_agent_system(intent_hint=intent_hint, sub_questions=state.get("sub_questions") or [])
+    budgets = state.get("recall_budgets") or {}
+    budget_hint = "、".join(f"{t}≤{n} 条" for t, n in budgets.items()) if budgets else ""
+    system = render_agent_system(
+        intent_hint=intent_hint,
+        sub_questions=state.get("sub_questions") or [],
+        budget_hint=budget_hint,
+    )
     start = time.monotonic()
     agent_trace: list[dict] = []
     try:

@@ -1,5 +1,6 @@
-"""⑯ 收尾：高频问题写缓存 + 消息持久化（答案/来源/推理链/工具日志/审查日志）+ SSE done
+"""⑯ 收尾：高频问题写缓存 + 经验库自动沉淀 + 消息持久化（答案/来源/推理链/工具日志/审查日志）+ SSE done
 - 缓存写入条件：freq ≥ min_freq（防穿透阈值）&& 检索命中 && 非兜底/概览/直读路径
+- 经验库沉淀：同条件自动入 qa_faq（待审核），管理员发布后直读
 - qa_message 持久化 assistant 消息（全量埋点字段）
 - ToolCallLog / SelfReflectionLog 落库（AgentTrace 由 P4 节点包装器写）
 """
@@ -11,7 +12,7 @@ from src.config.config_center import config_center
 from src.db.models import QaMessage, SelfReflectionLog, ToolCallLog
 from src.db.session import async_session_maker
 from src.rag.nodes._common import emit_stage
-from src.rag.services import rag_cache
+from src.rag.services import faq_store, rag_cache
 from src.rag.state import ChatState, RunnableConfig, RequestCtx, RunnableConfig
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,33 @@ async def finish_node(state: ChatState, config: RunnableConfig) -> dict:
 
     # ---- 持久化 assistant 消息（全量埋点）----
     sources = _sources_from_references(state.get("references") or [])
+
+    # ---- 经验库自动沉淀（待审核，管理员发布后直读）----
+    faq_written = False
+    faq_enabled = await config_center.get_bool("rag.feature.faq_enabled", True)
+    if (
+        faq_enabled
+        and not state.get("cache_hit")
+        and freq >= min_freq
+        and retrieval_hit
+        and path_type in CACHEABLE_PATHS
+        and normalized
+        and answer
+    ):
+        try:
+            faq_id = await faq_store.settle_faq(
+                question=state["question"],
+                normalized=normalized,
+                rewritten=state.get("rewritten_query"),
+                answer=answer,
+                sources=sources,
+                kb_ids=state.get("kb_ids"),
+                freq=freq,
+            )
+            faq_written = faq_id is not None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("经验库沉淀失败: %s", e)
+
     async with async_session_maker() as session:
         if conversation_id and message_id:
             msg = QaMessage(
@@ -144,6 +172,7 @@ async def finish_node(state: ChatState, config: RunnableConfig) -> dict:
         "use_fallback": bool(state.get("use_fallback")),
         "cache_hit": bool(state.get("cache_hit")),
         "cache_written": cache_written,
+        "faq_written": faq_written,
         "reflection": state.get("reflection"),
         "tool_calls": len(state.get("tool_logs") or []),
         "elapsed_ms": elapsed_ms,

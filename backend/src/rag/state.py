@@ -28,6 +28,8 @@ class ChatState(TypedDict, total=False):
     freq: int
     cache_hit: bool
     cached_answer: dict | None      # {answer, sources, elapsed_ms}
+    faq_hit: bool                   # 命中经验库（FAQ）直读
+    faq_id: int | None
 
     # ③ 概览短路
     is_overview: bool
@@ -39,6 +41,8 @@ class ChatState(TypedDict, total=False):
     # 意图（分层）
     intent_scope: str               # kb/chat/web/mixed/direct
     intent_labels: list[str]        # need_vector/need_bm25/need_web/need_memory
+    label_confidences: dict         # {label: confidence} 每标签置信度
+    recall_budgets: dict            # {tool: top_k} 置信度加权后的各工具召回配额
     sub_questions: list[str]
     needs_decomposition: bool
 

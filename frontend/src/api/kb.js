@@ -17,3 +17,5 @@ export const uploadDocument = (kbId, file, onProgress) => {
 export const deleteDocument = (docId) => http.delete(`/documents/${docId}`)
 export const retryDocument = (docId) => http.post(`/documents/${docId}/retry`)
 export const listChunks = (kbId, params) => http.get(`/kb/${kbId}/chunks`, { params })
+export const getKbDepartments = (kbId) => http.get(`/kb/${kbId}/departments`)
+export const setKbDepartments = (kbId, department_ids) => http.put(`/kb/${kbId}/departments`, { department_ids })

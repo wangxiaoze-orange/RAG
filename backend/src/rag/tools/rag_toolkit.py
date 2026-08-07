@@ -99,12 +99,20 @@ def build_langchain_tools(
     embed_fn: Callable[[str], Any] | None = None,
     tool_logger: Callable[[dict], None] | None = None,
     collector: dict[str, list] | None = None,
+    budgets: dict[str, int] | None = None,
 ) -> list:
     """按请求上下文构建 4 个 LangChain 工具
     - kb_ids/user_id 闭包注入（ReAct 无法感知外部状态）
     - tool_logger 回调：每次调用记录 {tool,args,summary,latency_ms}，用于 tool_call_log 与 SSE tool_call 事件
     - collector: {tool_name: [...]} 结果收集器（ReAct 结束后据此汇合多路召回）
+    - budgets: 意图置信度加权召回配额 {tool_name: top_k 上限}，LLM 传入的 top_k 会被截断
     """
+    budgets = budgets or {}
+
+    def _cap(name: str, requested: int, fallback: int = 10) -> int:
+        budget = budgets.get(name)
+        requested = requested if isinstance(requested, int) and requested > 0 else fallback
+        return min(requested, budget) if budget else requested
 
     def _collect(name: str, payload: list) -> None:
         if collector is not None:
@@ -112,6 +120,7 @@ def build_langchain_tools(
 
     async def _doc_search(query: str, top_k: int = 10) -> dict:
         start = time.monotonic()
+        top_k = _cap(TOOL_DOC_SEARCH, top_k)
         r = await doc_search_service(query, kb_ids=kb_ids, user_id=user_id, top_k=top_k, embed_fn=embed_fn)
         _collect(TOOL_DOC_SEARCH, r.get("chunks", []))
         if tool_logger:
@@ -125,6 +134,7 @@ def build_langchain_tools(
 
     async def _keyword_search(query: str, top_k: int = 10) -> dict:
         start = time.monotonic()
+        top_k = _cap(TOOL_KEYWORD_SEARCH, top_k)
         r = await keyword_search_service(query, kb_ids=kb_ids, top_k=top_k)
         _collect(TOOL_KEYWORD_SEARCH, r.get("chunks", []))
         if tool_logger:
@@ -138,6 +148,7 @@ def build_langchain_tools(
 
     async def _web_search(query: str, max_results: int = 5) -> dict:
         start = time.monotonic()
+        max_results = _cap(TOOL_WEB_SEARCH, max_results, fallback=5)
         r = await web_search_service(query, max_results=max_results)
         _collect(TOOL_WEB_SEARCH, r.get("results", []))
         if tool_logger:

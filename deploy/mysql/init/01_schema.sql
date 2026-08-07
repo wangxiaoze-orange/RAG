@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS `user` (
   `password_hash` VARCHAR(128) NOT NULL COMMENT 'bcrypt 哈希',
   `nickname`      VARCHAR(64)  DEFAULT NULL COMMENT '昵称',
   `email`         VARCHAR(128) DEFAULT NULL COMMENT '邮箱',
+  `role`          VARCHAR(16)  NOT NULL DEFAULT 'user' COMMENT 'admin/user',
+  `department_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '所属部门（审批通过后写入）',
   `status`        TINYINT      NOT NULL DEFAULT 1 COMMENT '1启用 0禁用',
   `last_login_at` DATETIME     DEFAULT NULL COMMENT '最后登录时间',
   `created_at`    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -16,6 +18,43 @@ CREATE TABLE IF NOT EXISTS `user` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_username` (`username`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='用户表';
+
+-- ============ 部门表（管理员自定义） ============
+CREATE TABLE IF NOT EXISTS `department` (
+  `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `name`        VARCHAR(64) NOT NULL COMMENT '部门名称',
+  `description` VARCHAR(255) DEFAULT NULL,
+  `created_by`  BIGINT UNSIGNED DEFAULT NULL COMMENT '创建人（管理员）',
+  `created_at`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_name` (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='部门表';
+
+-- ============ 入部申请表 ============
+CREATE TABLE IF NOT EXISTS `dept_apply` (
+  `id`            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `user_id`       BIGINT UNSIGNED NOT NULL,
+  `department_id` BIGINT UNSIGNED NOT NULL,
+  `status`        VARCHAR(16) NOT NULL DEFAULT 'pending' COMMENT 'pending/approved/rejected',
+  `reviewed_by`   BIGINT UNSIGNED DEFAULT NULL,
+  `reviewed_at`   DATETIME DEFAULT NULL,
+  `created_at`    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_user` (`user_id`),
+  KEY `idx_dept_status` (`department_id`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='入部申请表';
+
+-- ============ 知识库-部门授权表 ============
+CREATE TABLE IF NOT EXISTS `kb_department` (
+  `id`            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `kb_id`         BIGINT UNSIGNED NOT NULL,
+  `department_id` BIGINT UNSIGNED NOT NULL,
+  `created_at`    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_kb_dept` (`kb_id`, `department_id`),
+  KEY `idx_dept` (`department_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库部门授权表';
 
 -- ============ 会话表（①会话管理） ============
 CREATE TABLE IF NOT EXISTS `qa_conversation` (
@@ -73,6 +112,11 @@ CREATE TABLE IF NOT EXISTS `kb_knowledge_base` (
   `doc_count`   INT NOT NULL DEFAULT 0 COMMENT '文档数',
   `chunk_count` INT NOT NULL DEFAULT 0 COMMENT '切片总数',
   `status`      TINYINT NOT NULL DEFAULT 1 COMMENT '1启用 0停用',
+  `chunk_strategy`        VARCHAR(32) NOT NULL DEFAULT 'markdown' COMMENT 'markdown/fixed/semantic/parent_child',
+  `chunk_size`            INT NOT NULL DEFAULT 512,
+  `chunk_overlap`         INT NOT NULL DEFAULT 50,
+  `parse_pref`            VARCHAR(32) NOT NULL DEFAULT 'auto' COMMENT 'auto/mineru/pypdf/pdfplumber/docx/text',
+  `parse_min_confidence`  DECIMAL(4,3) NOT NULL DEFAULT 0.5 COMMENT '解析块置信度下限（MinerU）',
   `created_at`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -93,6 +137,7 @@ CREATE TABLE IF NOT EXISTS `kb_document` (
                    COMMENT 'uploaded/parsing/cleaning/chunking/embedding/ready/failed',
   `chunk_count`    INT NOT NULL DEFAULT 0,
   `parse_pipeline` VARCHAR(32) DEFAULT NULL COMMENT 'mineru/pypdf/pdfplumber/docx/text',
+  `parse_confidence` DECIMAL(4,3) DEFAULT NULL COMMENT '解析平均置信度',
   `error_msg`      VARCHAR(512) DEFAULT NULL COMMENT '失败原因',
   `created_at`     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -115,11 +160,34 @@ CREATE TABLE IF NOT EXISTS `kb_chunk` (
   `heading_path` VARCHAR(512) DEFAULT NULL COMMENT '标题层级路径 第一章>1.1>...',
   `milvus_id`    BIGINT DEFAULT NULL COMMENT 'Milvus 主键回填',
   `embedding_provider` VARCHAR(64) DEFAULT NULL COMMENT '嵌入供应商',
+  `parent_id`    BIGINT UNSIGNED DEFAULT NULL COMMENT '父子切片：所属父块 id',
+  `is_parent`    TINYINT NOT NULL DEFAULT 0 COMMENT '1=父块（不参与向量检索）',
   `created_at`   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_doc` (`doc_id`, `chunk_index`),
   KEY `idx_kb` (`kb_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库切片表';
+
+-- ============ 高频问题经验库（FAQ） ============
+CREATE TABLE IF NOT EXISTS `qa_faq` (
+  `id`                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `question`            VARCHAR(512) NOT NULL COMMENT '原始问题',
+  `question_normalized` VARCHAR(512) NOT NULL COMMENT '归一化问题（匹配键）',
+  `rewritten_question`  VARCHAR(512) DEFAULT NULL COMMENT '改写后问题',
+  `answer`              MEDIUMTEXT NOT NULL,
+  `sources`             JSON DEFAULT NULL COMMENT '来源引用快照',
+  `kb_ids`              JSON DEFAULT NULL COMMENT '适用知识库范围',
+  `status`              VARCHAR(16) NOT NULL DEFAULT 'pending' COMMENT 'pending/published/disabled',
+  `freq`                INT NOT NULL DEFAULT 1 COMMENT '沉淀时的问题热度',
+  `hit_count`           INT NOT NULL DEFAULT 0 COMMENT '发布后直读命中次数',
+  `expire_at`           DATETIME DEFAULT NULL COMMENT '有效期（空=永久）',
+  `created_by`          BIGINT UNSIGNED DEFAULT NULL COMMENT '发布/创建人，自动沉淀为空',
+  `created_at`          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_normalized` (`question_normalized`(191)),
+  KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='高频问题经验库';
 
 -- ============ 模型供应商表（etcd 主存，MySQL 兜底） ============
 CREATE TABLE IF NOT EXISTS `model_provider` (

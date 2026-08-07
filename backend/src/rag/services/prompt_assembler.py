@@ -82,11 +82,12 @@ def render_intent_prompt(question: str) -> str:
     return _load_template("intent_classify.txt").format(question=question)
 
 
-def render_agent_system(intent_hint: str = "", sub_questions: list[str] | None = None) -> str:
-    """⑦ ReAct 代理系统提示（含意图提示与拆解子问题）"""
+def render_agent_system(intent_hint: str = "", sub_questions: list[str] | None = None, budget_hint: str = "") -> str:
+    """⑦ ReAct 代理系统提示（含意图提示、拆解子问题与召回配额）"""
     return _load_template("agent_system.txt").format(
         intent_hint=intent_hint or "（无）",
         sub_questions="\n".join(f"- {q}" for q in (sub_questions or [])) or "（无）",
+        budget_hint=budget_hint or "（无限制，默认各工具 10 条）",
     )
 
 

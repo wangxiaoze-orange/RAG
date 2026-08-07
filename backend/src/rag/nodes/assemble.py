@@ -5,6 +5,7 @@
 import logging
 
 from src.rag.nodes._common import emit_stage
+from src.rag.services.parent_expand import expand_parents
 from src.rag.services.prompt_assembler import build_history_text, render_knowledge_system
 from src.rag.state import ChatState, RunnableConfig, RequestCtx, RunnableConfig
 
@@ -19,8 +20,10 @@ async def assemble_node(state: ChatState, config: RunnableConfig) -> dict:
     ctx: RequestCtx = config["configurable"]["request_ctx"]
     emit_stage(ctx.sink, "assemble", "Prompt 组装")
 
-    # 参考来源：直读路径用抽样切片，标准路径用压缩上下文
-    references = state.get("compressed_context") or state.get("scope_chunks") or []
+    # 参考来源：直读路径用抽样切片，标准路径用压缩上下文（直读路径也需父块扩展）
+    references = state.get("compressed_context")
+    if not references:
+        references = await expand_parents(state.get("scope_chunks") or [])
 
     # 用户画像（从记忆构建）
     profile_parts = []

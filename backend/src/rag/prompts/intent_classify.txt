@@ -9,11 +9,16 @@
 }}
 
 # 字段说明
-- labels: 多标签，从以下选择（可多选）
+- labels: 多标签数组，每项为 {{"label": 标签名, "confidence": 0~1 的置信度}}，从以下标签选择（可多选）
   - "need_vector"：需要语义向量检索（理解型问题）
   - "need_bm25"：需要关键词精确检索（专名/型号/术语）
   - "need_web"：需要最新或外部信息（含"最新/今天/新闻/实时"等）
   - "need_memory"：涉及用户个性化（称呼/偏好/过敏/回答风格）
+  - "need_fact_check"：需要事实核查（多路交叉验证）
+  - "need_summary"：需要文档总结/概览
+  - "need_comparison"：需要对比分析
+  示例：[{{"label": "need_vector", "confidence": 0.9}}, {{"label": "need_bm25", "confidence": 0.6}}]
+  置信度表示该检索方式对回答本问题的必要程度，越确定越高
 - scope: "kb"（知识库检索）| "chat"（纯闲聊，无需检索）| "web"（仅互联网）| "mixed"（混合）
 - needs_decomposition: 问题包含多个独立子问题（用"和/以及/分别/对比/哪些"连接）时为 true
 - sub_questions: 当 needs_decomposition 为 true 时，拆解出的子问题列表

@@ -86,3 +86,83 @@ def _rebuild_stack(current_stack: list[str], level: int, title: str) -> list[str
     keep = current_stack[: level - 1]
     keep.append(title)
     return keep
+
+
+# ============ 固定长度切分 ============
+def chunk_fixed(
+    text: str,
+    chunk_size: int = 512,
+    chunk_overlap: int = 50,
+) -> list[dict]:
+    """纯定长递归切分（不感知标题），返回结构与 chunk_markdown 一致"""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        length_function=len,
+        separators=SEPARATORS,
+    )
+    chunks = []
+    for idx, piece in enumerate(splitter.split_text(text)):
+        if not piece.strip():
+            continue
+        chunks.append({
+            "chunk_index": idx,
+            "content": piece.strip(),
+            "section_title": None,
+            "heading_path": None,
+            "token_count": estimate_tokens(piece),
+        })
+    # 编索引（跳过空片后重排）
+    for i, c in enumerate(chunks):
+        c["chunk_index"] = i
+    logger.info("固定切分完成：%d 片", len(chunks))
+    return chunks
+
+
+# ============ 父子切片 ============
+PARENT_SIZE_MULTIPLIER = 4  # 父块默认 = 4 × 子块长度
+
+
+def chunk_parent_child(
+    text: str,
+    child_size: int = 256,
+    child_overlap: int = 40,
+    parent_size: int | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """父子切分：大块（父）提供上下文，小块（子）参与向量检索
+    返回 (children, parents)：
+    - children: [{chunk_index, content, section_title, heading_path, token_count, parent_index}]
+    - parents:  [{index, content}]（先落库拿 id，再回填 children 的 parent_id）
+    """
+    parent_size = parent_size or child_size * PARENT_SIZE_MULTIPLIER
+    parents: list[dict] = []
+    children: list[dict] = []
+
+    parent_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=parent_size, chunk_overlap=child_overlap, length_function=len, separators=SEPARATORS,
+    )
+    child_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=child_size, chunk_overlap=child_overlap, length_function=len, separators=SEPARATORS,
+    )
+
+    for p_idx, parent_piece in enumerate(parent_splitter.split_text(text)):
+        parent_piece = parent_piece.strip()
+        if not parent_piece:
+            continue
+        parents.append({"index": p_idx, "content": parent_piece})
+        for child_piece in child_splitter.split_text(parent_piece):
+            child_piece = child_piece.strip()
+            if not child_piece:
+                continue
+            children.append({
+                "content": child_piece,
+                "section_title": None,
+                "heading_path": None,
+                "token_count": estimate_tokens(child_piece),
+                "parent_index": p_idx,
+            })
+
+    for i, c in enumerate(children):
+        c["chunk_index"] = i
+    logger.info("父子切分完成：%d 父块 → %d 子块", len(parents), len(children))
+    return children, parents

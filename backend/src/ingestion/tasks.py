@@ -17,12 +17,14 @@ except ImportError:  # arq 未安装：恒走 in-process，不影响主功能
     _HAS_ARQ = False
 
 from src.core.minio_client import get_minio
+from src.utils.text_normalizer import estimate_tokens
 from src.db.models import KbChunk, KbDocument, KbKnowledgeBase
 from src.db.session import async_session_maker
-from src.ingestion.chunker import chunk_markdown
+from src.ingestion.chunker import chunk_fixed, chunk_markdown, chunk_parent_child
 from src.ingestion.cleaner import clean_text
 from src.ingestion.embedder import embed_chunk_texts
 from src.ingestion.parser import parse_document
+from src.ingestion.semantic_chunker import chunk_semantic
 from src.providers.manager import provider_manager
 from src.rag.services.vector_store import get_vector_store
 
@@ -30,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 50
+PARENT_CHILD_SIZE = 256   # 父子策略子块默认尺寸
 
 
 async def _set_status(doc_id: int, status: str, error_msg: str | None = None) -> None:
@@ -46,38 +49,65 @@ async def process_document(ctx: Any, doc_id: int) -> dict:
     """入库管线主任务（arq 签名：第一个参数为任务上下文，in-process 调用时传 None）"""
     start_summary: dict = {"doc_id": doc_id, "status": "failed"}
 
-    # 1. 读取文档记录
+    # 1. 读取文档记录 + 知识库入库配置
     async with async_session_maker() as session:
         doc = await session.get(KbDocument, doc_id)
         if doc is None:
             return {**start_summary, "error": "文档不存在"}
         kb_id, filename, minio_object = doc.kb_id, doc.filename, doc.minio_object
+        kb = await session.get(KbKnowledgeBase, kb_id)
+
+    strategy = (kb.chunk_strategy if kb else None) or "markdown"
+    chunk_size = (kb.chunk_size if kb else None) or CHUNK_SIZE
+    chunk_overlap = (kb.chunk_overlap if kb else None) or CHUNK_OVERLAP
+    parse_pref = (kb.parse_pref if kb else None) or "auto"
+    parse_min_conf = float(kb.parse_min_confidence) if kb and kb.parse_min_confidence is not None else 0.5
 
     try:
-        # 2. 解析（MinerU 降级链）
+        # 2. 解析（指定解析器 + 置信度过滤）
         await _set_status(doc_id, "parsing")
         data = await get_minio().get_bytes(minio_object)
-        markdown, parser = parse_document(filename, data)
-        logger.info("文档 %d 解析完成（%s）", doc_id, parser)
+        markdown, parser, parse_confidence = parse_document(
+            filename, data, prefer=parse_pref, min_confidence=parse_min_conf
+        )
+        logger.info("文档 %d 解析完成（%s，置信度=%s）", doc_id, parser, parse_confidence)
 
         # 3. 清洗
         await _set_status(doc_id, "cleaning")
         cleaned = clean_text(markdown)
 
-        # 4. 分块
-        await _set_status(doc_id, "chunking")
-        chunks = chunk_markdown(cleaned, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
-        if not chunks:
-            raise ValueError("分块结果为空")
-
-        # 5. 嵌入
-        await _set_status(doc_id, "embedding")
+        # 4. 嵌入供应商（语义切分也需要，提前拿）
         provider = await provider_manager.get_default()
         if provider is None or not provider.embedding_model:
             raise RuntimeError("未配置带嵌入模型的供应商（请在前端供应商页配置 embedding_model）")
+
+        # 5. 分块（按知识库策略）
+        await _set_status(doc_id, "chunking")
+        parents: list[dict] = []
+        if strategy == "fixed":
+            chunks = chunk_fixed(cleaned, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        elif strategy == "semantic":
+            try:
+                chunks = await chunk_semantic(
+                    cleaned,
+                    embed_many=lambda texts: embed_chunk_texts(provider, texts),
+                    chunk_size=chunk_size,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("语义切分失败，降级固定切分: %s", e)
+                chunks = chunk_fixed(cleaned, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        elif strategy == "parent_child":
+            chunks, parents = chunk_parent_child(cleaned, child_size=PARENT_CHILD_SIZE, child_overlap=min(chunk_overlap, 80))
+        else:  # markdown（默认，标题感知）
+            chunks = chunk_markdown(cleaned, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        if not chunks:
+            raise ValueError("分块结果为空")
+
+        # 6. 嵌入（仅子块/普通块，父块不参与向量检索）
+        await _set_status(doc_id, "embedding")
         vectors = await embed_chunk_texts(provider, [c["content"] for c in chunks])
 
-        # 6. 写 Milvus + MySQL
+        # 7. 写 Milvus + MySQL（父子策略：先落父块拿 id，再回填子块 parent_id）
         await _set_status(doc_id, "embedding")
         vector_store = get_vector_store()
         await vector_store.ensure_collection()
@@ -97,6 +127,22 @@ async def process_document(ctx: Any, doc_id: int) -> dict:
         await vector_store.insert_chunks(milvus_rows)
 
         async with async_session_maker() as session:
+            # 父块先落库（is_parent=1，不参与检索）
+            parent_db_ids: dict[int, int] = {}
+            for p in parents:
+                prow = KbChunk(
+                    kb_id=kb_id,
+                    doc_id=doc_id,
+                    doc_name=filename,
+                    chunk_index=-(p["index"] + 1),  # 负数索引区分父块
+                    content=p["content"],
+                    token_count=estimate_tokens(p["content"]),
+                    is_parent=1,
+                    embedding_provider=provider.name,
+                )
+                session.add(prow)
+                await session.flush()
+                parent_db_ids[p["index"]] = prow.id
             for i, c in enumerate(chunks):
                 session.add(
                     KbChunk(
@@ -111,16 +157,23 @@ async def process_document(ctx: Any, doc_id: int) -> dict:
                         heading_path=c.get("heading_path"),
                         milvus_id=None,
                         embedding_provider=provider.name,
+                        parent_id=parent_db_ids.get(c.get("parent_index")) if parents else None,
                     )
                 )
             await session.commit()
 
-        # 7. 收尾：更新文档与知识库计数
+        # 8. 收尾：更新文档与知识库计数
         async with async_session_maker() as session:
             await session.execute(
                 update(KbDocument)
                 .where(KbDocument.id == doc_id)
-                .values(status="ready", chunk_count=len(chunks), parse_pipeline=parser, error_msg=None)
+                .values(
+                    status="ready",
+                    chunk_count=len(chunks),
+                    parse_pipeline=parser,
+                    parse_confidence=parse_confidence,
+                    error_msg=None,
+                )
             )
             kb = await session.get(KbKnowledgeBase, kb_id)
             if kb:
@@ -138,7 +191,7 @@ async def process_document(ctx: Any, doc_id: int) -> dict:
                 kb.chunk_count = len(chunk_total)
             await session.commit()
 
-        logger.info("文档 %d 入库完成：%d 片", doc_id, len(chunks))
+        logger.info("文档 %d 入库完成：%d 片（策略=%s，父块=%d）", doc_id, len(chunks), strategy, len(parents))
         return {"doc_id": doc_id, "status": "ready", "chunk_count": len(chunks), "parser": parser}
 
     except Exception as e:  # noqa: BLE001
