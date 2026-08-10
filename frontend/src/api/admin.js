@@ -27,6 +27,6 @@ export const disableFaq = (id) => http.post(`/faqs/${id}/disable`)
 export const deleteFaq = (id) => http.delete(`/faqs/${id}`)
 export const searchFaqs = (q) => http.get('/faqs/search', { params: { q } })
 
-// ============ 流水线配置 ============
+// ============ AI配置 ============
 export const getConfig = () => http.get('/admin/config')
 export const setConfig = (values) => http.put('/admin/config', { values })

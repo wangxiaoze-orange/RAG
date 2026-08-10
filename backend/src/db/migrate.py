@@ -19,6 +19,7 @@ _ENSURE_COLUMNS: list[tuple[str, str, str]] = [
     ("kb_document", "parse_confidence", "parse_confidence DECIMAL(4,3) DEFAULT NULL COMMENT '解析平均置信度'"),
     ("kb_chunk", "parent_id", "parent_id BIGINT UNSIGNED DEFAULT NULL COMMENT '父子切片：所属父块 id'"),
     ("kb_chunk", "is_parent", "is_parent TINYINT NOT NULL DEFAULT 0 COMMENT '1=父块（不参与向量检索）'"),
+    ("kb_document", "chunk_strategy", "chunk_strategy VARCHAR(32) DEFAULT NULL COMMENT '文档级切片策略（覆盖知识库默认）'"),
 ]
 
 

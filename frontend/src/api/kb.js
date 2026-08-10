@@ -6,9 +6,10 @@ export const updateKb = (id, data) => http.put(`/kb/${id}`, data)
 export const deleteKb = (id) => http.delete(`/kb/${id}`)
 
 export const listDocuments = (kbId) => http.get(`/kb/${kbId}/documents`)
-export const uploadDocument = (kbId, file, onProgress) => {
+export const uploadDocument = (kbId, file, onProgress, chunkStrategy) => {
   const fd = new FormData()
   fd.append('file', file)
+  if (chunkStrategy) fd.append('chunk_strategy', chunkStrategy)
   return http.post(`/kb/${kbId}/documents`, fd, {
     onUploadProgress: onProgress,
     headers: { 'Content-Type': 'multipart/form-data' },

@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS `kb_document` (
   `parse_pipeline` VARCHAR(32) DEFAULT NULL COMMENT 'mineru/pypdf/pdfplumber/docx/text',
   `parse_confidence` DECIMAL(4,3) DEFAULT NULL COMMENT '解析平均置信度',
   `error_msg`      VARCHAR(512) DEFAULT NULL COMMENT '失败原因',
+  `chunk_strategy` VARCHAR(32) DEFAULT NULL COMMENT '文档级切片策略（覆盖知识库默认）markdown/fixed/semantic/parent_child',
   `created_at`     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

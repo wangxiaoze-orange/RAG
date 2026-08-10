@@ -1,4 +1,4 @@
-"""流水线配置 API（管理员）：
+"""AI配置 API（管理员）：
 - GET /api/v2/admin/config：返回全部可调参数的 当前值/默认值/说明/类型/分组
 - PUT /api/v2/admin/config：批量写入（config_center 双写 etcd + MySQL，TTL 10 秒内生效）
 """

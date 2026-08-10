@@ -55,9 +55,10 @@ async def process_document(ctx: Any, doc_id: int) -> dict:
         if doc is None:
             return {**start_summary, "error": "文档不存在"}
         kb_id, filename, minio_object = doc.kb_id, doc.filename, doc.minio_object
+        doc_chunk_strategy = doc.chunk_strategy  # 文档级策略（可能为 None）
         kb = await session.get(KbKnowledgeBase, kb_id)
 
-    strategy = (kb.chunk_strategy if kb else None) or "markdown"
+    strategy = doc_chunk_strategy or (kb.chunk_strategy if kb else None) or "markdown"
     chunk_size = (kb.chunk_size if kb else None) or CHUNK_SIZE
     chunk_overlap = (kb.chunk_overlap if kb else None) or CHUNK_OVERLAP
     parse_pref = (kb.parse_pref if kb else None) or "auto"

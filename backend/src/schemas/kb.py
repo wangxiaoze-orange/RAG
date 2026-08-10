@@ -94,6 +94,7 @@ class DocumentOut(BaseModel):
     chunk_count: int
     parse_pipeline: str | None = None
     error_msg: str | None = None
+    chunk_strategy: str | None = None
     created_at: datetime
 
     class Config:

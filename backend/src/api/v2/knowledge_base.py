@@ -8,7 +8,7 @@ import hashlib
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -213,6 +213,7 @@ async def list_documents(
 async def upload_document(
     kb_id: int,
     file: UploadFile = File(...),
+    chunk_strategy: str | None = Form(default=None),
     user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentOut:
@@ -252,6 +253,7 @@ async def upload_document(
         md5=md5_hex,
         minio_object=object_name,
         status="uploaded",
+        chunk_strategy=chunk_strategy,
     )
     db.add(doc)
     await db.commit()

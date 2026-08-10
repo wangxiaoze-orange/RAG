@@ -43,6 +43,8 @@
                 <el-tag size="small" type="danger">{{ STATUS_TEXT[d.status] || d.status }}</el-tag>
               </el-tooltip>
               <el-tag v-else size="small" :type="STATUS_TAG[d.status] || 'info'">{{ STATUS_TEXT[d.status] || d.status }}</el-tag>
+              <el-tag v-if="d.chunk_strategy" size="small" type="info" effect="plain">{{ STRATEGY_TEXT[d.chunk_strategy] || d.chunk_strategy }}</el-tag>
+              <el-icon class="doc-preview" title="预览切片" @click="previewChunks(kb, d)"><View /></el-icon>
               <el-icon class="doc-del" title="删除文档" @click="removeDoc(d)"><Delete /></el-icon>
               <el-icon v-if="d.status === 'failed'" class="doc-retry" title="重试" @click="retryDoc(d)"><Refresh /></el-icon>
             </div>
@@ -51,8 +53,9 @@
             <el-upload
               class="uploader"
               drag
+              :auto-upload="false"
               :show-file-list="false"
-              :http-request="(opt) => doUpload(kb, opt)"
+              :on-change="(uploadFile) => onFileSelected(uploadFile, kb)"
               :disabled="uploading[kb.id]"
             >
               <div v-if="uploading[kb.id]" class="upload-progress">
@@ -61,7 +64,7 @@
               </div>
               <div v-else class="upload-hint">
                 <el-icon><UploadFilled /></el-icon>
-                <span>拖拽或点击上传 PDF / Word / Markdown / TXT</span>
+                <span>拖拽或点击上传 PDF / Word / HTML / Excel / CSV / Markdown / TXT</span>
               </div>
             </el-upload>
           </div>
@@ -129,6 +132,28 @@
       </template>
     </el-dialog>
 
+    <!-- 上传确认对话框 -->
+    <el-dialog v-model="uploadDialogVisible" title="确认上传" width="420px">
+      <el-form label-width="100px">
+        <el-form-item label="文件">
+          <span>{{ pendingFile?.name }}</span>
+        </el-form-item>
+        <el-form-item label="切片策略">
+          <el-select v-model="uploadStrategy" style="width: 100%">
+            <el-option label="Markdown 结构切分" value="markdown" />
+            <el-option label="固定长度" value="fixed" />
+            <el-option label="语义切分" value="semantic" />
+            <el-option label="父子切片" value="parent_child" />
+          </el-select>
+          <p class="hint" style="margin-top: 4px">已根据文件类型智能推荐，也可手动调整</p>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="uploadDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmUpload">确认上传</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 切片预览 -->
     <el-dialog v-model="chunksVisible" :title="`切片预览 — ${previewDoc?.filename || ''}`" width="720px">
       <div v-loading="chunksLoading" class="chunk-list">
@@ -179,6 +204,11 @@ const permKb = ref(null)
 const permDeptIds = ref([])
 const permLoading = ref(false)
 const allDepartments = ref([])
+
+const uploadDialogVisible = ref(false)
+const pendingFile = ref(null)
+const pendingKb = ref(null)
+const uploadStrategy = ref('markdown')
 
 const STRATEGY_TEXT = {
   markdown: 'Markdown 切分',
@@ -287,13 +317,33 @@ async function onKbCommand(cmd, kb) {
   }
 }
 
-async function doUpload(kb, opt) {
+function recommendStrategy(filename) {
+  const ext = filename.split('.').pop().toLowerCase()
+  if (['html', 'htm'].includes(ext)) return 'fixed'
+  if (['xlsx', 'xls', 'csv'].includes(ext)) return 'fixed'
+  if (['md', 'markdown'].includes(ext)) return 'markdown'
+  if (['pdf', 'docx'].includes(ext)) return 'markdown'
+  if (ext === 'txt') return 'fixed'
+  return null
+}
+
+function onFileSelected(uploadFile, kb) {
+  pendingFile.value = uploadFile.raw
+  pendingKb.value = kb
+  uploadStrategy.value = recommendStrategy(uploadFile.name) || kb.chunk_strategy || 'markdown'
+  uploadDialogVisible.value = true
+}
+
+async function confirmUpload() {
+  uploadDialogVisible.value = false
+  const kb = pendingKb.value
+  const file = pendingFile.value
   uploading[kb.id] = true
   uploadProgress[kb.id] = 0
   try {
-    await uploadDocument(kb.id, opt.file, (evt) => {
+    await uploadDocument(kb.id, file, (evt) => {
       if (evt.total) uploadProgress[kb.id] = Math.round((evt.loaded / evt.total) * 100)
-    })
+    }, uploadStrategy.value)
     ElMessage.success('上传成功，已投递后台解析')
     loadDocs(kb.id)
     refresh()
@@ -301,6 +351,8 @@ async function doUpload(kb, opt) {
     ElMessage.error(e.message)
   } finally {
     uploading[kb.id] = false
+    pendingFile.value = null
+    pendingKb.value = null
   }
 }
 
@@ -438,7 +490,8 @@ async function submitPerm() {
   color: #409eff;
 }
 .doc-del,
-.doc-retry {
+.doc-retry,
+.doc-preview {
   color: #c0c4cc;
   cursor: pointer;
 }
@@ -447,6 +500,9 @@ async function submitPerm() {
 }
 .doc-retry:hover {
   color: #e6a23c;
+}
+.doc-preview:hover {
+  color: #409eff;
 }
 .uploader {
   margin-top: 8px;

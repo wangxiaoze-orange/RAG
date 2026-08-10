@@ -2,7 +2,7 @@
   <div class="config-page">
     <div class="head">
       <div>
-        <h3>流水线配置</h3>
+        <h3>AI配置</h3>
         <p class="sub">修改后经配置中心双写（etcd + MySQL），约 10 秒内全量生效。仅管理员可编辑。</p>
       </div>
       <el-button type="primary" :loading="saving" :disabled="!dirtyCount" @click="saveAll">

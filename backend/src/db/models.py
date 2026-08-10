@@ -156,6 +156,7 @@ class KbDocument(Base):
     parse_pipeline: Mapped[str | None] = mapped_column(String(32))
     parse_confidence: Mapped[float | None] = mapped_column(Float, comment="解析平均置信度")
     error_msg: Mapped[str | None] = mapped_column(String(512))
+    chunk_strategy: Mapped[str | None] = mapped_column(String(32), comment="文档级切片策略（覆盖知识库默认）")
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 

@@ -7,7 +7,7 @@
         <router-link to="/knowledge" class="nav-item">知识库</router-link>
         <router-link to="/faqs" class="nav-item">经验库</router-link>
         <router-link to="/providers" class="nav-item">模型供应商</router-link>
-        <router-link v-if="userStore.isAdmin" to="/admin/config" class="nav-item">流水线配置</router-link>
+        <router-link v-if="userStore.isAdmin" to="/admin/config" class="nav-item">AI配置</router-link>
         <router-link v-if="userStore.isAdmin" to="/users" class="nav-item">用户管理</router-link>
       </div>
       <el-dropdown @command="onCommand">

@@ -81,6 +81,48 @@ def _parse_docx(data: bytes) -> str:
     return "\n".join(parts)
 
 
+def _parse_html(data: bytes) -> str:
+    from bs4 import BeautifulSoup
+    html_text = _decode_text(data)
+    soup = BeautifulSoup(html_text, "lxml")
+    for tag in soup.find_all(["script", "style", "nav", "footer", "header", "noscript", "iframe"]):
+        tag.decompose()
+    return soup.get_text(separator="\n", strip=True)
+
+
+def _parse_excel(data: bytes) -> str:
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    parts = []
+    max_rows = 50000
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        if sheet_name != wb.sheetnames[0]:
+            parts.append(f"\n## {sheet_name}\n")
+        row_count = 0
+        for row in ws.iter_rows(values_only=True):
+            if row_count >= max_rows:
+                logger.warning("Excel 行数超过 %d，已截断", max_rows)
+                break
+            cells = [str(c).strip() if c is not None else "" for c in row]
+            if any(cells):
+                parts.append(" | ".join(cells))
+            row_count += 1
+    wb.close()
+    return "\n".join(parts)
+
+
+def _parse_csv(data: bytes) -> str:
+    import csv
+    text = _decode_text(data)
+    reader = csv.reader(text.splitlines())
+    parts = []
+    for row in reader:
+        if any(cell.strip() for cell in row):
+            parts.append(" | ".join(cell.strip() for cell in row))
+    return "\n".join(parts)
+
+
 def _decode_text(data: bytes) -> str:
     """兼容 UTF-8 / GBK / GB18030 编码"""
     for enc in ("utf-8", "gb18030"):
@@ -148,6 +190,20 @@ def parse_document(
     elif ext in ("txt", "md", "markdown", "text"):
         text = _decode_text(data)
         parser = "text"
+    elif ext in ("html", "htm"):
+        try:
+            text = _parse_html(data)
+            parser = "html"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("html 解析失败，按文本处理: %s", e)
+            text = _decode_text(data)
+            parser = "text"
+    elif ext in ("xlsx", "xls"):
+        text = _parse_excel(data)
+        parser = "excel"
+    elif ext == "csv":
+        text = _parse_csv(data)
+        parser = "csv"
     else:
         # 其余（png/jpg 等图片）尝试 OCR 需要 MinerU，v1 暂不支持 → 抛错
         raise ValueError(f"暂不支持的文件类型: {ext or filename}")
